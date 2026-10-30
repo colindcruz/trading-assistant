@@ -1,0 +1,5 @@
+kiteconnect>=5.2.1
+python-dotenv>=1.0.0
+requests>=2.31.0
+pytest>=8.0
+openpyxl>=3.1   # replay only: reads the Console .xlsx tradebook export

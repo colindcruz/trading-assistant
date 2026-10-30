@@ -1,0 +1,19 @@
+[Unit]
+Description=Trading Assistant - Phase 1 Account Guardian (replaces pnl-monitor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pnlmon
+Group=pnlmon
+WorkingDirectory=/opt/trading-assistant
+ExecStart=/opt/trading-assistant/venv/bin/python -m ta
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
