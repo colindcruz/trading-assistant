@@ -51,6 +51,7 @@ class Store:
         self.data.setdefault("telegram_offset", 0)
         self.data.setdefault("last_summary_date", "")
         self.data.setdefault("kill_pending", False)     # /kill sent with no day loaded: applies to the next day
+        self.data.setdefault("live_rules", [])          # in dryrun: rules whose exits are real anyway ("/live lock")
 
 
     def save(self) -> None:
@@ -63,6 +64,15 @@ class Store:
     @mode.setter
     def mode(self, value: str) -> None:
         self.data["mode"] = value
+        self.save()
+
+    @property
+    def live_rules(self) -> list[str]:
+        return list(self.data["live_rules"])
+
+    @live_rules.setter
+    def live_rules(self, value: list[str]) -> None:
+        self.data["live_rules"] = sorted(set(value))
         self.save()
 
     @property

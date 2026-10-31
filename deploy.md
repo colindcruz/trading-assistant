@@ -67,6 +67,14 @@ and thresholds.
 
 ## 6. Going live
 
+One rule at a time is possible: `/live lock` makes only the profit lock real (its exit-all and
+the square-off of anything bought in the 3-minute cool-down after it). Every other rule stays
+dry-run and only alerts; it does not simulate a sale, so the books stay matched to the account.
+`/live` makes everything live, `/dryrun` turns it all back. Mode changes are accepted before
+9:15am or after 3:40pm. Decided 2026-10-31: `/live lock` from Tuesday 2026-11-03, after Monday
+confirms the Kite connection and that the TA's net matches Kite's.
+
+
 After ten clean dry-run days (compare each day's `days/<date>.json` orders with the Kite
 tradebook): send `/live` before 09:15, then `/status` to confirm LIVE. Test `/kill` after the
 close the day before, not that morning (it would stop the first live day).

@@ -34,6 +34,8 @@ from .watchlist import SPOT_KEYS, near_money_tokens
 
 log = logging.getLogger("ta")
 
+LIVE_RULE_NAMES = ("lock", "loss", "eod")   # rules that "/live <rule>" can make real while the rest stay dry-run
+
 
 class SwitchingBroker:
     """Delegates to the live or dry-run broker depending on the current mode, so the
@@ -65,7 +67,8 @@ class Service:
         self.ledger: Ledger | None = None
         self.instruments: dict = {}
         self.token_to_key: dict[int, str] = {}
-        self.engine: ExitEngine | None = None
+        self.engine: ExitEngine | None = None            # follows the mode (dry-run broker in dryrun)
+        self.live_engine: ExitEngine | None = None       # always the real broker: live rules while in dryrun
 
         self.ltp: dict[str, float] = {}             # "EX:SYM" -> price, from ticks
         self.ltp_at: dict[str, float] = {}          # "EX:SYM" -> clock() of that tick
@@ -161,8 +164,9 @@ class Service:
             return
         self.instruments = build_instrument_index(rows)
         self.token_to_key = {m["instrument_token"]: f"{ex}:{sym}" for (ex, sym), m in self.instruments.items()}
-        if self.engine is not None:
-            self.engine.instruments = self.instruments
+        for engine in (self.engine, self.live_engine):
+            if engine is not None:
+                engine.instruments = self.instruments
         log.info("Instruments loaded: %d NIFTY/SENSEX option contracts", len(self.instruments))
 
     def _start_day(self, now: datetime) -> None:
@@ -198,6 +202,8 @@ class Service:
                                 urgent=True)
         self.engine = ExitEngine(self.broker, self.s, self.instruments, self._engine_notify, self._record_order,
                                  clock=self.clock, sleep=self.sleep, now_fn=self.now_fn)
+        self.live_engine = ExitEngine(self.broker.live, self.s, self.instruments, self._engine_notify, self._record_order,
+                                      clock=self.clock, sleep=self.sleep, now_fn=self.now_fn)
         self.dirty = True
         self.replaying = True
         try:
@@ -410,17 +416,24 @@ class Service:
                 self.allowed_keys = {r["key"] for r in self.rows}
                 text += ("\nKILLED: no orders will be sent. Exit manually." if st.killed
                          else "\nAUTO-EXIT PAUSED: no orders will be sent. Exit manually or /resume.")
+            elif (engine := self._engine_for(event.reason)) is None:
+                self.allowed_keys = {r["key"] for r in self.rows}
+                text += f"\nNot sold: only {', '.join(self.store.live_rules)} is live. Exit yourself."
+                st.notes.append(f"{now:%H:%M:%S} would exit all ({event.reason}); not a live rule")
             else:
                 self.allowed_keys = set()
-                self._start_sweep(lambda: self.engine.exit_all(event.reason), event.reason)
+                self._start_sweep(lambda: engine.exit_all(event.reason), event.reason)
                 text += "\nExit orders going out."
         elif event.square_off:
             if st.killed:
                 text += "\nKILLED: not squaring off."
             elif st.pause_squareoff:
                 text += "\nSQUARE-OFF PAUSED: left open."
+            elif (engine := self._engine_for(event.reason)) is None:
+                text += f"\nNot sold: only {', '.join(self.store.live_rules)} is live."
+                st.notes.append(f"{now:%H:%M:%S} would square off {event.square_off} ({event.reason}); not a live rule")
             else:
-                self._start_sweep(lambda: self.engine.square_off(event.square_off, event.reason, event.square_off_qty), event.reason)
+                self._start_sweep(lambda: engine.square_off(event.square_off, event.reason, event.square_off_qty), event.reason)
         self.notifier.alert(text, urgent=urgent, kind=event.kind if event.kind.endswith("SQUAREOFF") else None)
 
     def _enforce_lockout(self, now: datetime) -> None:
@@ -436,15 +449,54 @@ class Service:
         if not offenders:
             return
         names = ", ".join(f"{r['tradingsymbol']} x{r['quantity']}" for r in offenders)
+        engine = self._engine_for(reason)
+        if engine is None:
+            # not a live rule: tell once, then these positions are the trader's to manage
+            self.allowed_keys |= {r["key"] for r in offenders}
+            self.notifier.alert(f"Open during {reason}: {names}. Not sold: only {', '.join(self.store.live_rules)} is live.",
+                                urgent=True, kind="lockout_poll")
+            return
         self.notifier.alert(f"Open during {reason}: {names}. Squaring off.", urgent=True, kind="lockout_poll")
-        self._start_sweep(lambda: self.engine.exit_all(f"{reason} square-off") if len(offenders) == len(self.rows)
-                          else self._square_off_many(offenders, reason), reason)
+        self._start_sweep(lambda: engine.exit_all(f"{reason} square-off") if len(offenders) == len(self.rows)
+                          else self._square_off_many(engine, offenders, reason), reason)
 
-    def _square_off_many(self, rows: list[dict], reason: str) -> SweepResult:
+    def _square_off_many(self, engine: ExitEngine, rows: list[dict], reason: str) -> SweepResult:
         last = SweepResult(reason=reason, nothing_to_do=True)
         for r in rows:
-            last = self.engine.square_off(r["key"], reason)
+            last = engine.square_off(r["key"], reason)
         return last
+
+    # ================================================================ which rules are live
+    @staticmethod
+    def rule_of(reason: str) -> str:
+        """The rule an exit belongs to, from its reason: 'lock' (profit-lock exit and the
+        cool-down after it), 'loss', 'eod' (3:06pm exit, 3:10pm cut-off), 'manual', 'other'."""
+        r = reason.lower()
+        if "profit lock" in r or r.startswith("cool-down"):
+            return "lock"
+        if "loss limit" in r:
+            return "loss"
+        if "end of day" in r or "cut-off" in r:
+            return "eod"
+        if "manual" in r:
+            return "manual"
+        return "other"
+
+    def _engine_for(self, reason: str) -> ExitEngine | None:
+        """LIVE: the engine on the real broker. DRYRUN with no live rules: the dry-run engine
+        (simulated fills, as before). DRYRUN with live rules ("/live lock"): the real broker for
+        those rules, and None for the rest, which then only alert, so the books stay matched to
+        the real account."""
+        live_rules = self.store.live_rules
+        if self.store.mode == "live" or not live_rules:
+            return self.engine
+        return self.live_engine if self.rule_of(reason) in live_rules else None
+
+    def mode_label(self) -> str:
+        if self.store.mode == "live":
+            return "LIVE"
+        rules = self.store.live_rules
+        return f"DRYRUN, LIVE: {', '.join(rules)}" if rules else "DRYRUN"
 
     # ================================================================ per-trade stops
     def _stop_on_ledger(self, ev, fill: Fill, now: datetime) -> None:
@@ -621,7 +673,7 @@ class Service:
         if not st.guardian_check_sent and at_or_after(now, self.s.guardian_check_time):
             st.guardian_check_sent = True
             self.dirty = True
-            self.notifier.alert(f"Trading Assistant is running ({self.store.mode.upper()}). "
+            self.notifier.alert(f"Trading Assistant is running ({self.mode_label()}). "
                                 f"Token OK, ticker {'connected' if self.session is None or self.session.ticker_connected else 'connecting'}. "
                                 f"pnl-monitor is replaced by this service.")
         if not st.setup_sent and (at_or_after(now, self.s.guardian_check_time) or at_or_after(now, self.s.pre_open)):
@@ -631,7 +683,7 @@ class Service:
 
     def _setup_text(self) -> str:
         th = self.state.thresholds
-        return (f"Morning setup ({self.state.date}) — {self.store.mode.upper()}\n"
+        return (f"Morning setup ({self.state.date}) — {self.mode_label()}\n"
                 f"Capital {rupees(th.capital)} ({self.state.capital_source})\n"
                 f"Loss: warn {rupees(-th.loss_warn1)} / {rupees(-th.loss_warn2)}, limit {rupees(-th.loss_limit)}\n"
                 f"Lock: arms {rupees(th.lock_arm)}, floor {rupees(th.lock_floor)}; trail from {rupees(th.trail_start)}, "
@@ -643,10 +695,10 @@ class Service:
     def status_text(self, now: datetime) -> str:
         st, lg = self.state, self.ledger
         if st is None or lg is None:
-            return f"No session today ({now:%a %d %b}). Mode {self.store.mode.upper()}."
+            return f"No session today ({now:%a %d %b}). Mode {self.mode_label()}."
         b = lg.breakdown(self._ltp_by_key())
         lines = [
-            f"{now:%H:%M} {self.store.mode.upper()}{' KILLED' if st.killed else ''}{' EXITING' if st.exiting else ''}",
+            f"{now:%H:%M} {self.mode_label()}{' KILLED' if st.killed else ''}{' EXITING' if st.exiting else ''}",
             f"Net {rupees(b['net'])} (gross {rupees(b['gross'])}, charges {rupees(-b['charges'])})",
             f"Peak {rupees(st.peak)}, trough {rupees(st.trough)}",
             f"Floor {rupees(st.floor) if st.floor is not None else 'not armed'}"
@@ -698,7 +750,7 @@ class Service:
         b = lg.breakdown(self._ltp_by_key())
         exits = [o for o in st.orders if o.get("action") == "place"]
         self.notifier.alert(
-            f"End of day {st.date} ({self.store.mode.upper()})\n"
+            f"End of day {st.date} ({self.mode_label()})\n"
             f"Gross {rupees(b['gross'])}, charges {rupees(-b['charges'])} (flat-rate estimate {rupees(-lg.flat_charge_estimate())}), "
             f"net {rupees(b['net'])}\n"
             f"Trades {lg.trades_opened} opened / {lg.trades_closed} closed; peak {rupees(st.peak)}, trough {rupees(st.trough)}\n"
@@ -745,12 +797,22 @@ class Service:
             self.dirty = True
             return "KILLED: no orders will be placed for the rest of today, even after a restart. Alerts continue."
         if name in ("live", "dryrun"):
-            if is_trading_day(now.date()) and not before(now, self.s.pre_open):
-                return f"/{name} is only accepted before {fmt_hhmm(self.s.pre_open)}."
-            self.store.mode = "live" if name == "live" else "dryrun"
+            if (is_trading_day(now.date()) and not before(now, self.s.pre_open)
+                    and before(now, self.s.market_close)):
+                return (f"/{name} is only accepted before {fmt_hhmm(self.s.pre_open)} "
+                        f"or after {fmt_hhmm(self.s.market_close)}.")
+            rules = [a.lower() for a in args]
+            unknown = [r for r in rules if r not in LIVE_RULE_NAMES]
+            if name == "live" and unknown:
+                return f"Unknown rule {', '.join(unknown)}. Use /live (everything) or /live {' | '.join(LIVE_RULE_NAMES)}."
+            if name == "live" and rules:
+                self.store.mode, self.store.live_rules = "dryrun", rules
+            else:
+                self.store.mode, self.store.live_rules = ("live" if name == "live" else "dryrun"), []
             if st is not None:
                 st.mode = self.store.mode
-            return f"Mode is now {self.store.mode.upper()}."
+            extra = ("\nThese rules' exits are REAL orders; the others only alert." if self.store.live_rules else "")
+            return f"Mode is now {self.mode_label()}.{extra}"
         if name == "exitall":
             if st is None or self.engine is None:
                 return "No session today."
