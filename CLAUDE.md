@@ -31,5 +31,8 @@ NIFTY/SENSEX options and places real exit orders. Replaces `pnl-monitor` (and
 
 ## Status
 
-See the "Implementation status" and "October replay result" sections of the spec. Open: per-trade
-stop/trail (rulebook v1), weekly brake, `/book`, deploy in dry-run, 10 dry-run days, `/live`.
+The spec's last section, "Open items", is the to-do list; keep it current. Also see the spec's
+"Implementation status" and "October replay result" sections. Short form: decide the phase of the
+per-trade stop/trail and the stop anchor, fix the replay figure, define `/book`, then build the
+new threshold defaults, the weekly brake and (if Phase 1) the per-trade engine; deploy in dry-run;
+10 dry-run days; `/live`.
