@@ -52,6 +52,7 @@ class Store:
         self.data.setdefault("last_summary_date", "")
         self.data.setdefault("kill_pending", False)     # /kill sent with no day loaded: applies to the next day
         self.data.setdefault("live_rules", [])          # in dryrun: rules whose exits are real anyway ("/live lock")
+        self.data.setdefault("first_day", "")           # the TA's first trading day: missing records count from here
 
 
     def save(self) -> None:
@@ -73,6 +74,15 @@ class Store:
     @live_rules.setter
     def live_rules(self, value: list[str]) -> None:
         self.data["live_rules"] = sorted(set(value))
+        self.save()
+
+    @property
+    def first_day(self) -> str:
+        return str(self.data["first_day"])
+
+    @first_day.setter
+    def first_day(self, value: str) -> None:
+        self.data["first_day"] = value
         self.save()
 
     @property

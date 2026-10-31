@@ -77,6 +77,8 @@ class DayState:
     notes: list[str] = field(default_factory=list)
     slippage: list[dict] = field(default_factory=list)     # one entry per fill, see slippage.py
     stops: dict = field(default_factory=dict)               # open trades' stops, see stops.py
+    brake: str = "off"                                      # weekly brake for today: off | half | week_over (brake.py)
+    brake_days: int = 0                                     # max-loss days earlier this week, counted at setup
     stop_log: list[dict] = field(default_factory=list)      # closed trades: entry, each ladder's exit, actual exit
 
     # ------------------------------------------------------------ persistence

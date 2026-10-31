@@ -18,11 +18,11 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
-from . import rules, slippage, stops
+from . import brake, rules, slippage, stops
 from .broker import Broker, DryRunBroker, KiteBroker
-from .clock import at_or_after, before, fmt_hhmm, in_market_hours, is_trading_day, now_ist, rupees
+from .clock import at_or_after, before, fmt_hhmm, in_market_hours, is_trading_day, next_trading_day, now_ist, rupees
 from .config import Settings, Thresholds
 from .exit_engine import TAG_PREFIX, ExitEngine, SweepResult
 from .exit_logic import LONG, build_instrument_index, select_index_options
@@ -193,8 +193,21 @@ class Service:
         else:
             capital, source = self._read_capital()
             th = Thresholds.from_capital(capital, self.s.percents)
-            self.state = DayState(date=now.date().isoformat(), thresholds=th, mode=self.store.mode, capital_source=source)
-            log.info("New day %s: capital %s (%s)", now.date(), capital, source)
+            level, n_days, missing = self._weekly_brake(now.date())
+            if level != brake.OFF:
+                th = brake.halve(th)
+            self.state = DayState(date=now.date().isoformat(), thresholds=th, mode=self.store.mode, capital_source=source,
+                                  brake=level, brake_days=n_days)
+            log.info("New day %s: capital %s (%s), weekly brake %s", now.date(), capital, source, level)
+            if level == brake.WEEK_OVER:
+                self.state.lockout, self.state.lockout_reason = True, "weekly brake: 3 max-loss days"
+            if level != brake.OFF:
+                gap = f" (missing records counted: {', '.join(missing)})" if missing else ""
+                self.notifier.alert(
+                    (f"WEEKLY BRAKE: {n_days} max-loss days this week{gap}. No trading until Monday."
+                     if level == brake.WEEK_OVER else
+                     f"WEEKLY BRAKE: {n_days} max-loss days this week{gap}. Thresholds halved for the rest of the week: "
+                     f"loss limit {rupees(-th.loss_limit)}. Trade half size: 1,300 NIFTY / 500 SENSEX."), urgent=True)
         if self.store.kill_pending:
             self.state.killed = True
             self.store.kill_pending = False
@@ -215,6 +228,36 @@ class Service:
                 stop = stops.active_stop(self.state.stops, key)
                 self.notifier.alert(f"Stop armed on restart: {t['symbol']} x{t['qty']} @ {t['first']:g}, stop {stop:g} "
                                     f"({t['active']}), risk ₹{t['qty'] * (t['avg'] - stop):,.0f}")
+
+    def _weekly_brake(self, today: date) -> tuple[str, int, list[str]]:
+        """Recount this week's max-loss days from the saved day records (never from memory)."""
+        if not self.store.first_day:
+            self.store.first_day = today.isoformat()
+        records = {d: load_day_record(self.s.state_dir, d) for d in brake.past_trading_days_this_week(today)}
+        n, missing = brake.count_max_loss_days(today, records, date.fromisoformat(self.store.first_day))
+        return brake.level(n), n, missing
+
+    def _week_lines(self, today: date) -> str:
+        """Last trading day of the week: the week's line and the step-up check (4 clean weeks)."""
+        weeks = []
+        for k in range(3, -1, -1):
+            start = brake.monday(today) - timedelta(weeks=k)
+            recs = []
+            for i in range(5):
+                d = start + timedelta(days=i)
+                if d == today:
+                    recs.append(self.state.to_dict())
+                elif d < today and is_trading_day(d):
+                    r = load_day_record(self.s.state_dir, d)
+                    if r:
+                        recs.append(r)
+            weeks.append(brake.week_summary(recs))
+        w, streak = weeks[-1], brake.clean_streak(weeks)
+        line = (f"Week: net {rupees(w['net'])}, max-loss days {w['max_loss_days']}, brake {'on' if w['brake'] else 'off'}, "
+                f"forced overrides {w['overrides']}. Clean weeks in a row: {min(streak, 4)} of 4")
+        if streak >= 4:
+            line += ". Eligible to step up to 3,250 / 1,500: change the size in config before an open, if you choose."
+        return line
 
     def _read_capital(self) -> tuple[float, str]:
         if self.s.capital_override > 0:
@@ -690,7 +733,9 @@ class Service:
                 f"distance {rupees(th.trail_distance)}\n"
                 f"Trades: {f'max {th.max_trades}' if th.max_trades > 0 else 'no cap'}, "
                 f"risk/trade {rupees(th.reentry_floor_step)}; cool-down {th.cooldown_minutes} min\n"
-                f"Exit all {fmt_hhmm(self.s.exit_all_time)}, no new after {fmt_hhmm(self.s.no_new_time)}")
+                f"Exit all {fmt_hhmm(self.s.exit_all_time)}, no new after {fmt_hhmm(self.s.no_new_time)}\n"
+                f"Weekly brake: {self.state.brake.upper().replace('_', ' ')} "
+                f"({self.state.brake_days} max-loss day{'s' if self.state.brake_days != 1 else ''} earlier this week)")
 
     def status_text(self, now: datetime) -> str:
         st, lg = self.state, self.ledger
@@ -710,6 +755,8 @@ class Service:
         blocked = st.blocked_reason(now, self.s.no_new_time)
         if blocked:
             lines.append(f"Trading blocked: {blocked}")
+        if st.brake != brake.OFF:
+            lines.append(f"Weekly brake: {st.brake.upper().replace('_', ' ')} ({st.brake_days} max-loss days this week)")
         if st.stops:
             lines.append(f"Stops ({self.s.stop_ladder}, exits {self.s.stop_exits.upper()}):")
             lines += ["  " + line for line in stops.status_lines(st.stops)]
@@ -757,7 +804,9 @@ class Service:
             f"Lockout: {st.lockout_reason or 'none'}; re-entries {st.reentries}; exit orders {len(exits)}; "
             f"turnover {rupees(b['turnover'])}\n"
             f"{slippage.summary(st.slippage)}\n"
-            f"{stops.compare(st.stop_log)}")
+            f"{stops.compare(st.stop_log)}"
+            + (f"\n{self._week_lines(now.date())}"
+               if brake.monday(next_trading_day(now.date())) != brake.monday(now.date()) else ""))
 
     # ================================================================ telegram
     def _telegram_loop(self) -> None:
