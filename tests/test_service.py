@@ -244,3 +244,39 @@ def test_slippage_measured_against_last_tick_and_bid_at_send(tmp_path):
     advance(svc, holder, clock)
     exit_rec = next(r for r in svc.state.slippage if r["order_id"] == ta_order["order_id"])
     assert exit_rec["ref_kind"] == "bid_at_send" and exit_rec["points"] == 3.5
+
+
+def test_watchlist_follows_spot(tmp_path):
+    b = FakeBroker()
+    b.spot = {"NSE:NIFTY 50": 24990.0, "BSE:SENSEX": 82010.0}
+    svc, tg, _, holder, clock = build(tmp_path, b, now=ist(2026, 11, 2, 9, 5))
+    svc.tick()
+    assert svc.watch_tokens == {NIFTY["instrument_token"], NIFTY2["instrument_token"], SENSEX["instrument_token"]}
+    b.spot = {}
+    advance(svc, holder, clock, seconds=61)   # spot read empty: keep the last list
+    assert len(svc.watch_tokens) == 3
+
+
+class RecordingSession:
+    """Just enough KiteSession for the loop: a valid token and a subscribe() that records."""
+    def __init__(self):
+        self.token, self.last_token_check, self.subscribed = "t", 10**12, set()
+        self.ticker_connected, self.last_tick_at = True, 0.0
+
+    def subscribe(self, tokens):
+        self.subscribed = set(tokens)
+
+
+def test_subscription_is_open_positions_plus_watchlist(tmp_path):
+    b = FakeBroker()
+    b.spot = {"BSE:SENSEX": 82010.0}                     # NIFTY spot unavailable: only SENSEX is watched
+    b.add_position(NIFTY2, 65, 50.0)
+    session = RecordingSession()
+    holder = {"now": ist(2026, 11, 2, 10, 0)}
+    clock = Clock()
+    svc = Service(make_settings(tmp_path), Store(tmp_path), FakeTelegram(), b, session=session,
+                  now_fn=lambda: holder["now"], clock=clock, sleep=clock.sleep)
+    svc.instruments = {}
+    svc._load_instruments()
+    svc.tick()
+    assert session.subscribed == {NIFTY2["instrument_token"], SENSEX["instrument_token"]}

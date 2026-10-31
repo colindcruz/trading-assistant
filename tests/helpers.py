@@ -78,6 +78,7 @@ class FakeBroker:
         self.modified: list[tuple[str, float]] = []
         self.cancelled: list[str] = []
         self.trades_rows: list[dict] = []
+        self.spot: dict[str, float] = {}   # index LTP keys, e.g. "NSE:NIFTY 50"
         self.margins = {"available": {"opening_balance": 20_00_000.0, "intraday_payin": 0.0}}
         self.raise_on_limit: Exception | None = None
         self.raise_on_market: Exception | None = None
@@ -128,6 +129,9 @@ class FakeBroker:
     def ltp(self, keys):
         out = {}
         for k in keys:
+            if k in self.spot:
+                out[k] = self.spot[k]
+                continue
             ex, sym = k.split(":")
             for p in self.positions:
                 if p["exchange"] == ex and p["tradingsymbol"] == sym:

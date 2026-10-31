@@ -30,6 +30,7 @@ from .ledger import ContractState, Fill, Ledger, fill_from_order_update, fill_fr
 from .rules import DayState, Event
 from .state import Store, load_day_record, save_day_record
 from .telegram import Notifier, Telegram, classify_change, parse_command
+from .watchlist import SPOT_KEYS, near_money_tokens
 
 log = logging.getLogger("ta")
 
@@ -73,6 +74,8 @@ class Service:
         self.updates: queue.Queue = queue.Queue()  # order updates from the ticker thread
         self.commands: queue.Queue = queue.Queue()
         self.order_filled_seen: dict[str, int] = {}
+        self.watch_tokens: set[int] = set()         # near-the-money contracts kept subscribed
+        self.last_watch_refresh = 0.0
 
         self.sweep_thread: threading.Thread | None = None
         self.allowed_keys: set[str] = set()         # positions allowed to stay open during a trade-cap lockout
@@ -119,6 +122,7 @@ class Service:
                 return
         self._pre_open_messages(now)
         self._drain_order_updates(now)
+        self._refresh_watchlist(now)
         self._poll_positions(now)
         self._reconcile_trades(now)
         if in_market_hours(now, self.s.market_open, self.s.market_close) or at_or_after(now, self.s.market_close):
@@ -311,14 +315,33 @@ class Service:
         rows, _unknown = select_index_options(net, self.instruments)
         self.rows = [r for r in rows if r["side"] == LONG]
         self.shorts = [r for r in rows if r["side"] != LONG]
-        # subscribe to what is open; fall back to positions' last_price for LTP
+        # subscribe to what is open plus the near-the-money watchlist; fall back to positions' last_price for LTP
         if self.session is not None:
-            self.session.subscribe({r["instrument_token"] for r in rows})
+            self.session.subscribe({r["instrument_token"] for r in rows} | self.watch_tokens)
         with self.ltp_lock:
             for r in rows:
                 self.ltp.setdefault(f"{r['exchange']}:{r['tradingsymbol']}", r["last_price"])
         self._adopt_unknown_positions(now)
         self._enforce_lockout(now)
+
+    def _refresh_watchlist(self, now: datetime) -> None:
+        """Re-centre the near-the-money watchlist on spot, every watch_refresh_seconds.
+        A failed spot read keeps the previous list."""
+        if self.s.watch_strikes <= 0 or not self.instruments:
+            return
+        if self.last_watch_refresh and self.clock() - self.last_watch_refresh < self.s.watch_refresh_seconds:
+            return
+        self.last_watch_refresh = self.clock()
+        try:
+            quotes = self.broker.ltp(list(SPOT_KEYS.values()))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("spot ltp() failed: %s", exc)
+            return
+        spot = {name: quotes.get(key, 0.0) for name, key in SPOT_KEYS.items()}
+        tokens = near_money_tokens(self.instruments, spot, now.date(), self.s.watch_strikes, self.s.watch_expiries)
+        if tokens and tokens != self.watch_tokens:
+            log.info("Watchlist: %d contracts around NIFTY %s / SENSEX %s", len(tokens), spot["NIFTY"], spot["SENSEX"])
+            self.watch_tokens = tokens
 
     def _adopt_unknown_positions(self, now: datetime) -> None:
         """A long position Kite reports that the ledger has never seen (carried overnight,

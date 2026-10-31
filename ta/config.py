@@ -190,6 +190,11 @@ class Settings:
     token_check_seconds: float
     telegram_poll_timeout: int
 
+    # --- near-the-money watchlist (slippage references for entries; see watchlist.py) ---
+    watch_strikes: int = 10            # strikes each side of the money, CE and PE; 0 = off
+    watch_expiries: int = 2            # nearest expiries per index
+    watch_refresh_seconds: float = 60.0
+
     @classmethod
     def from_env(cls) -> "Settings":
         state_dir = Path(_env("STATE_DIR", "."))
@@ -232,6 +237,9 @@ class Settings:
             positions_poll_seconds=_env_float("POSITIONS_POLL_SECONDS", 2.0),
             token_check_seconds=_env_float("TOKEN_CHECK_SECONDS", 30.0),
             telegram_poll_timeout=_env_int("TELEGRAM_POLL_TIMEOUT", 20),
+            watch_strikes=_env_int("WATCH_STRIKES", 10),
+            watch_expiries=_env_int("WATCH_EXPIRIES", 2),
+            watch_refresh_seconds=_env_float("WATCH_REFRESH_SECONDS", 60.0),
         )
 
     def validate(self) -> list[str]:
