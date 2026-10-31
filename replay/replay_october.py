@@ -158,7 +158,9 @@ def load_marks(archive: Path | None, day: str) -> DayMarks | None:
 # ---------------------------------------------------------------- the replay
 
 def replay_day(day: str, fills: list[Fill], capital: float, rates: ChargeRates, percents: RulePercents,
-               marks: DayMarks | None = None) -> dict:
+               marks: DayMarks | None = None, target: float = 0.0, lock_ends_day: bool = False) -> dict:
+    """What-ifs: `target` > 0 is a fixed profit target (net reaches it: exit all, day over);
+    `lock_ends_day` makes a profit-lock exit end the day instead of starting a cool-down."""
     th = Thresholds.from_capital(capital, percents)
     guardian = Ledger(rates)
     actual = Ledger(rates)
@@ -189,13 +191,19 @@ def replay_day(day: str, fills: list[Fill], capital: float, rates: ChargeRates, 
         if ended:
             return
         net = guardian.net_pnl(last_price)
+        if target > 0 and net >= target:
+            out["exits"].append({"time": ts.strftime("%H:%M:%S"), "reason": "PROFIT_TARGET", "net": round(net)})
+            virtual_close(ts)
+            out["exits"][-1]["net_after_close"] = round(guardian.net_pnl(last_price))
+            ended = True
+            return
         for ev in evaluate(state, net, ts, bool(guardian.open_contracts()), EXIT_ALL):
             out["events"].append(f"{ts:%H:%M:%S} {ev.kind} net={net:.0f}")
             if ev.exit_all:
                 out["exits"].append({"time": ts.strftime("%H:%M:%S"), "reason": ev.kind, "net": round(net)})
                 virtual_close(ts)
                 out["exits"][-1]["net_after_close"] = round(guardian.net_pnl(last_price))
-            if ev.kind in ("LOSS_EXIT", "EOD_EXIT"):
+            if ev.kind in ("LOSS_EXIT", "EOD_EXIT") or (lock_ends_day and ev.kind == "LOCK_EXIT"):
                 ended = True
             if ev.exit_all or ended:
                 break
@@ -291,11 +299,12 @@ def scale_fills(fills: list[Fill], factor: float) -> list[Fill]:
 
 
 def replay(fills: list[Fill], capital: float, rates=ChargeRates(), percents=RulePercents(),
-           archive: Path | None = None) -> list[dict]:
+           archive: Path | None = None, target: float = 0.0, lock_ends_day: bool = False) -> list[dict]:
     by_day: dict[str, list[Fill]] = defaultdict(list)
     for f in fills:
         by_day[f.ts.date().isoformat()].append(f)
-    return [replay_day(day, by_day[day], capital, rates, percents, load_marks(archive, day)) for day in sorted(by_day)]
+    return [replay_day(day, by_day[day], capital, rates, percents, load_marks(archive, day), target, lock_ends_day)
+            for day in sorted(by_day)]
 
 
 def main() -> None:
