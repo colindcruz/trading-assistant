@@ -280,3 +280,28 @@ def test_subscription_is_open_positions_plus_watchlist(tmp_path):
     svc._load_instruments()
     svc.tick()
     assert session.subscribed == {NIFTY2["instrument_token"], SENSEX["instrument_token"]}
+
+
+def test_kill_before_the_session_applies_to_the_next_day(tmp_path):
+    svc, tg, b, holder, clock = build(tmp_path, now=ist(2026, 10, 31, 11, 0))      # Saturday
+    svc.tick()
+    assert "next trading day" in svc.handle_command("/kill", holder["now"])
+    assert svc.store.kill_pending
+    # a restart over the weekend keeps it
+    svc2, tg2, _, holder2, clock2 = build(tmp_path, b, now=ist(2026, 11, 2, 9, 0))  # Monday
+    svc2.tick()
+    assert svc2.state.killed and not svc2.store.kill_pending
+    assert any("sent before today's session" in t for t in tg2.sent)
+    assert "KILLED" in svc2.handle_command("/status", holder2["now"])
+
+
+def test_kill_survives_a_restart_the_same_day(tmp_path):
+    svc, tg, b, holder, clock = build(tmp_path, now=ist(2026, 11, 2, 10, 0))
+    svc.tick()
+    assert "even after a restart" in svc.handle_command("/kill", holder["now"])
+    svc.dirty = True
+    clock.t += 10
+    svc._persist()
+    svc2, tg2, _, holder2, clock2 = build(tmp_path, b, now=ist(2026, 11, 2, 10, 5))
+    svc2.tick()
+    assert svc2.state.killed

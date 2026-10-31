@@ -59,15 +59,17 @@ and thresholds.
 ## 5. First morning checks
 
 1. `/status` answers.
-2. `/kill` answers "KILLED" (then restart the service: `systemctl restart trading-assistant`).
-3. `/set` lists the day's thresholds.
-4. Watch one dry-run day: every would-be order appears in the log and in `days/<date>.json`.
+2. `/set` lists the day's thresholds.
+3. Watch one dry-run day: every would-be order appears in the log and in `days/<date>.json`.
+4. After the 15:06 exit, `/kill` answers "KILLED". A kill lasts the rest of the day, restarts included
+   (it is saved in the day record), so testing it in the morning would lose that day's dry-run.
+   A `/kill` sent when no day is loaded (weekend, before the session) applies to the next trading day.
 
 ## 6. Going live
 
 After ten clean dry-run days (compare each day's `days/<date>.json` orders with the Kite
-tradebook): send `/live` before 09:15, then `/status` to confirm LIVE, and test `/kill`
-once more that morning.
+tradebook): send `/live` before 09:15, then `/status` to confirm LIVE. Test `/kill` after the
+close the day before, not that morning (it would stop the first live day).
 
 ## 7. Backups
 

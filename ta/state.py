@@ -50,6 +50,8 @@ class Store:
         self.data.setdefault("last_good_capital", 0.0)
         self.data.setdefault("telegram_offset", 0)
         self.data.setdefault("last_summary_date", "")
+        self.data.setdefault("kill_pending", False)     # /kill sent with no day loaded: applies to the next day
+
 
     def save(self) -> None:
         save_json(self.path, self.data)
@@ -61,6 +63,15 @@ class Store:
     @mode.setter
     def mode(self, value: str) -> None:
         self.data["mode"] = value
+        self.save()
+
+    @property
+    def kill_pending(self) -> bool:
+        return bool(self.data["kill_pending"])
+
+    @kill_pending.setter
+    def kill_pending(self, value: bool) -> None:
+        self.data["kill_pending"] = value
         self.save()
 
     @property

@@ -61,7 +61,7 @@ class DayState:
     lockout_reason: str = ""
     eod_exit_done: bool = False
     exiting: bool = False           # a sweep is running (also persisted so a restart mid-sweep knows)
-    killed: bool = False            # /kill: no order placement until restart
+    killed: bool = False            # /kill: no order placement for the rest of the day, restarts included
 
     pause_auto_exit: bool = False
     pause_notifications: bool = False

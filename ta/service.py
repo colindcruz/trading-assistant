@@ -185,6 +185,11 @@ class Service:
             th = Thresholds.from_capital(capital, self.s.percents)
             self.state = DayState(date=now.date().isoformat(), thresholds=th, mode=self.store.mode, capital_source=source)
             log.info("New day %s: capital %s (%s)", now.date(), capital, source)
+        if self.store.kill_pending:
+            self.state.killed = True
+            self.store.kill_pending = False
+            self.notifier.alert("KILLED (sent before today's session): no orders will be placed today. Alerts continue.",
+                                urgent=True)
         self.engine = ExitEngine(self.broker, self.s, self.instruments, self._engine_notify, self._record_order,
                                  clock=self.clock, sleep=self.sleep, now_fn=self.now_fn)
         self.dirty = True
@@ -594,10 +599,11 @@ class Service:
             return self.status_text(now)
         if name == "kill":
             if st is None:
-                return "No session today."
+                self.store.kill_pending = True
+                return "KILLED for the next trading day: no orders will be placed that day. Alerts continue."
             st.killed = True
             self.dirty = True
-            return "KILLED: no orders will be placed until the service restarts. Alerts continue."
+            return "KILLED: no orders will be placed for the rest of today, even after a restart. Alerts continue."
         if name in ("live", "dryrun"):
             if is_trading_day(now.date()) and not before(now, self.s.pre_open):
                 return f"/{name} is only accepted before {fmt_hhmm(self.s.pre_open)}."
