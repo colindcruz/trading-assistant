@@ -447,7 +447,8 @@ class Service:
                 f"Loss: warn {rupees(-th.loss_warn1)} / {rupees(-th.loss_warn2)}, limit {rupees(-th.loss_limit)}\n"
                 f"Lock: arms {rupees(th.lock_arm)}, floor {rupees(th.lock_floor)}; trail from {rupees(th.trail_start)}, "
                 f"distance {rupees(th.trail_distance)}\n"
-                f"Trades: max {th.max_trades}, risk/trade {rupees(th.reentry_floor_step)}; cool-down {th.cooldown_minutes} min\n"
+                f"Trades: {f'max {th.max_trades}' if th.max_trades > 0 else 'no cap'}, "
+                f"risk/trade {rupees(th.reentry_floor_step)}; cool-down {th.cooldown_minutes} min\n"
                 f"Exit all {fmt_hhmm(self.s.exit_all_time)}, no new after {fmt_hhmm(self.s.no_new_time)}")
 
     def status_text(self, now: datetime) -> str:
@@ -461,7 +462,8 @@ class Service:
             f"Peak {rupees(st.peak)}, trough {rupees(st.trough)}",
             f"Floor {rupees(st.floor) if st.floor is not None else 'not armed'}"
             + (f" (re-entries {st.reentries})" if st.reentries else ""),
-            f"Trades {st.trades_used(lg.trades_opened)}/{st.thresholds.max_trades} used"
+            (f"Trades {st.trades_used(lg.trades_opened)}/{st.thresholds.max_trades} used" if st.thresholds.max_trades > 0
+             else f"Trades {st.trades_used(lg.trades_opened)} taken")
             + (f" ({len(st.void_trades)} squared off on sight)" if st.void_trades else ""),
         ]
         blocked = st.blocked_reason(now, self.s.no_new_time)

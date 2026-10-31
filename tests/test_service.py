@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 
+from ta.config import RulePercents
 from ta.service import Service
 from ta.state import Store, load_day_record
 from helpers import Clock, FakeBroker, FakeTelegram, NIFTY, NIFTY2, SENSEX, ist, make_settings
@@ -9,12 +10,12 @@ from helpers import Clock, FakeBroker, FakeTelegram, NIFTY, NIFTY2, SENSEX, ist,
 DAY = ist(2026, 11, 2, 9, 0)   # Monday
 
 
-def build(tmp_path, broker=None, now=DAY):
+def build(tmp_path, broker=None, now=DAY, **settings):
     clock = Clock()
     tg = FakeTelegram()
     broker = broker or FakeBroker()
     holder = {"now": now}
-    svc = Service(make_settings(tmp_path), Store(tmp_path), tg, broker, session=None,
+    svc = Service(make_settings(tmp_path, **settings), Store(tmp_path), tg, broker, session=None,
                   now_fn=lambda: holder["now"], clock=clock, sleep=clock.sleep)
     return svc, tg, broker, holder, clock
 
@@ -213,3 +214,10 @@ def test_weekend_does_nothing(tmp_path):
     svc.tick()
     assert svc.state is None and tg.sent == []
     assert "No session today" in svc.handle_command("/status", holder["now"])
+
+
+def test_default_settings_have_no_trade_cap(tmp_path):
+    svc, tg, b, holder, clock = build(tmp_path, now=ist(2026, 11, 2, 9, 5), percents=RulePercents())
+    svc.tick()
+    assert any("Trades: no cap, risk/trade" in t for t in tg.sent)
+    assert "Trades 0 taken" in svc.handle_command("/status", holder["now"])

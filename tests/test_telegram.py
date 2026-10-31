@@ -24,6 +24,12 @@ def test_classify_change_directions():
     assert classify_change("unknown_thing", 1, 2) == "loosen"
 
 
+def test_max_trades_zero_means_no_cap():
+    assert classify_change("max_trades", 0, 4) == "tighten"    # adding a cap
+    assert classify_change("max_trades", 4, 0) == "loosen"     # removing it
+    assert classify_change("max_trades", 0, 0) == "same"
+
+
 class FakeResp:
     def __init__(self, payload, ok=True):
         self.payload, self.ok, self.status_code, self.text = payload, ok, 200 if ok else 500, ""

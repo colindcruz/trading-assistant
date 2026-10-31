@@ -225,7 +225,7 @@ def replay_day(day: str, fills: list[Fill], capital: float, rates: ChargeRates, 
                 out["dropped_buys"] += 1
                 return
             opens_new = c is None or c.qty == 0
-            if opens_new and state.trades_used(guardian.trades_opened) >= th.max_trades:
+            if opens_new and th.max_trades > 0 and state.trades_used(guardian.trades_opened) >= th.max_trades:
                 out.setdefault("dropped_buys", 0)
                 out["dropped_buys"] += 1
                 return

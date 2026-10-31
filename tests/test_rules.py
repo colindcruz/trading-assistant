@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from ta.ledger import Fill, LedgerEvent
 from ta.rules import DayState, evaluate, on_ledger_event
+from ta.config import RulePercents
 from helpers import ist, thresholds
 
 EXIT_AT = (15, 6)
@@ -21,6 +22,16 @@ def test_thresholds_at_20L():
     assert (th.loss_limit, th.loss_warn1, th.loss_warn2) == (200_000, 100_000, 150_000)
     assert (th.lock_arm, th.lock_floor, th.trail_start, th.trail_distance) == (200_000, 133_400, 250_000, 68_000)
     assert th.max_trades == 4 and th.reentry_floor_step == 50_000
+
+
+def test_shipped_defaults_at_20L():
+    """Spec rulebook 2026-10-31: lock arms +2.5L, floor +1.67L, trail from +3.1L at 85k, no trade cap,
+    re-entry step = risk per trade (2.5% of capital)."""
+    th = thresholds(percents=RulePercents())
+    assert (th.loss_limit, th.loss_warn1, th.loss_warn2) == (200_000, 100_000, 150_000)
+    assert (th.lock_arm, th.lock_floor, th.trail_start, th.trail_distance) == (250_000, 166_600, 312_000, 85_000)
+    assert th.max_trades == 0 and th.reentry_floor_step == 50_000
+    assert thresholds(10_00_000, RulePercents()).reentry_floor_step == 25_000
 
 
 def test_loss_warnings_once_then_limit_locks_day():
@@ -184,3 +195,14 @@ def test_day_state_round_trips_through_json():
     back = DayState.from_dict(json.loads(json.dumps(d)))
     assert back.floor == st.floor and back.cooldown_until == st.cooldown_until
     assert back.thresholds.loss_limit == 200_000 and back.orders == st.orders
+
+
+def test_no_cap_allows_any_number_of_trades():
+    st = DayState(date="2026-11-02", thresholds=thresholds(percents=RulePercents()))
+    t = ist(2026, 11, 2, 10, 0)
+    for i in range(1, 13):
+        ev = on_ledger_event(st, LedgerEvent("TRADE_OPENED", "k", i, fill()), t, i, NO_NEW)
+        assert [e.kind for e in ev] == ["TRADE_OPENED"] and f"Trade {i} opened" in ev[0].message
+        ev = on_ledger_event(st, LedgerEvent("TRADE_CLOSED", "k", i, fill(side="SELL")), t, i, NO_NEW)
+        assert [e.kind for e in ev] == ["TRADE_CLOSED"]
+    assert not st.lockout and st.trades_used(12) == 12 and st.trades_left(12) is None

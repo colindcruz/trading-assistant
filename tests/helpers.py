@@ -9,11 +9,17 @@ from ta.clock import IST
 from ta.config import ChargeRates, RulePercents, Settings, Thresholds
 
 
+# Round numbers for the rule-mechanics tests (lock +2L / floor +1.334L / trail from +2.5L / 68k, cap 4).
+# The shipped defaults (no cap, lock at 12.5%) are tested separately in test_rules.py.
+RULE_TEST_PERCENTS = RulePercents(lock_arm_pct=10.0, lock_floor_pct=6.67, trail_start_pct=12.5,
+                                  trail_distance_pct=3.4, max_trades=4)
+
+
 def make_settings(state_dir: Path | str = ".", **over) -> Settings:
     base = dict(
         kite_api_key="key", access_token_path=Path(".access_token"),
         telegram_bot_token="bot", telegram_chat_id="100", telegram_user_id="7", ntfy_topic="",
-        percents=RulePercents(), charges=ChargeRates(), capital_sanity_pct=50.0, capital_override=0.0,
+        percents=RULE_TEST_PERCENTS, charges=ChargeRates(), capital_sanity_pct=50.0, capital_override=0.0,
         exit_buffer_pct=5.0, reprice_attempts=3, reprice_interval_seconds=2.0, urgent_after_seconds=30.0,
         order_gap_seconds=0.2, market_protection=-1, skip_below_price=0.0,
         freeze_qty={"NIFTY": 3510, "SENSEX": 1000}, cancel_wait_seconds=3.0,
@@ -26,8 +32,8 @@ def make_settings(state_dir: Path | str = ".", **over) -> Settings:
     return Settings(**base)
 
 
-def thresholds(capital: float = 20_00_000) -> Thresholds:
-    return Thresholds.from_capital(capital, RulePercents())
+def thresholds(capital: float = 20_00_000, percents: RulePercents | None = None) -> Thresholds:
+    return Thresholds.from_capital(capital, percents or RULE_TEST_PERCENTS)
 
 
 def ist(y, mo, d, h, mi, s=0) -> datetime:

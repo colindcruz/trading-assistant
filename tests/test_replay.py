@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "replay"))
 
 from replay_october import read_tradebook, replay  # noqa: E402
+from helpers import RULE_TEST_PERCENTS  # noqa: E402
 
 COLUMNS = ["symbol", "isin", "trade_date", "exchange", "segment", "series", "trade_type", "auction",
            "quantity", "price", "trade_id", "order_id", "order_execution_time"]
@@ -37,7 +38,7 @@ def test_profit_giveback_day_is_cut_by_the_lock(tmp_path):
     ])
     fills = read_tradebook(p)
     assert len(fills) == 4
-    (day,) = replay(fills, 20_00_000)
+    (day,) = replay(fills, 20_00_000, percents=RULE_TEST_PERCENTS)
     assert day["trades"] == 2
     gross_actual = 6500 * 40 - 6500 * 35
     assert abs(day["actual_gross"] - gross_actual) < 1
@@ -68,7 +69,7 @@ def test_loss_limit_day_is_capped_near_minus_2L(tmp_path):
     rows.append(("2026-10-09", "11:00:00", "NIFTY26O0924500PE", "buy", 6500, 100))
     rows.append(("2026-10-09", "12:00:00", "NIFTY26O0924500PE", "sell", 6500, 60))
     write_tradebook(p, rows)
-    (day,) = replay(read_tradebook(p), 20_00_000)
+    (day,) = replay(read_tradebook(p), 20_00_000, percents=RULE_TEST_PERCENTS)
     assert day["exit"] and day["exit"]["reason"] == "LOSS_EXIT"
     assert day["actual_net"] < -500_000
     # the guardian stops at or just past -2L (the breach is only seen when a fill prints)
@@ -82,7 +83,7 @@ def test_quiet_day_passes_through(tmp_path):
         ("2026-10-13", "09:30:00", "SENSEX26O1682000CE", "buy", 200, 300),
         ("2026-10-13", "10:30:00", "SENSEX26O1682000CE", "sell", 200, 320),
     ])
-    (day,) = replay(read_tradebook(p), 20_00_000)
+    (day,) = replay(read_tradebook(p), 20_00_000, percents=RULE_TEST_PERCENTS)
     assert day["exit"] is None and day["trades"] == 1
     assert abs(day["guardian_net"] - day["actual_net"]) < 1
     assert 3000 < day["actual_net"] < 4000

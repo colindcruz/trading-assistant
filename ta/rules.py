@@ -120,7 +120,10 @@ class DayState:
     def trades_used(self, trades_opened: int) -> int:
         return self.counted_trade_no(trades_opened)
 
-    def trades_left(self, trades_opened: int) -> int:
+    def trades_left(self, trades_opened: int) -> int | None:
+        """Trades still allowed today, or None when there is no cap (max_trades 0)."""
+        if self.thresholds.max_trades <= 0:
+            return None
         return max(0, self.thresholds.max_trades - self.trades_used(trades_opened))
 
 
@@ -216,6 +219,7 @@ def on_ledger_event(state: DayState, ev: LedgerEvent, now: datetime, trades_open
                     no_new_time: tuple[int, int]) -> list[Event]:
     """React to a fill: the trade counter and the no-new-positions rules."""
     th = state.thresholds
+    capped = th.max_trades > 0      # 0 = no daily trade cap
     events: list[Event] = []
     sym = ev.fill.tradingsymbol
     blocked = state.blocked_reason(now, no_new_time)
@@ -226,13 +230,14 @@ def on_ledger_event(state: DayState, ev: LedgerEvent, now: datetime, trades_open
             state.void_trades.append(ev.trade_no)
             events.append(Event("BLOCKED_SQUAREOFF", f"New position {sym} x{ev.fill.quantity} during {blocked}: squaring off.",
                                 urgent=True, square_off=ev.key, reason=blocked))
-        elif n > th.max_trades:
+        elif capped and n > th.max_trades:
             state.void_trades.append(ev.trade_no)
             events.append(Event("TRADE_CAP_SQUAREOFF",
                                 f"Trade {n} of {th.max_trades} opened ({sym}): over the cap, squaring off.",
                                 urgent=True, square_off=ev.key, reason="trade cap"))
         else:
-            events.append(Event("TRADE_OPENED", f"Trade {n} of {th.max_trades} opened: {sym} x{ev.fill.quantity} @ {ev.fill.price}"))
+            label = f"Trade {n} of {th.max_trades}" if capped else f"Trade {n}"
+            events.append(Event("TRADE_OPENED", f"{label} opened: {sym} x{ev.fill.quantity} @ {ev.fill.price}"))
     elif ev.kind == "POSITION_INCREASED":
         if blocked:
             events.append(Event("BLOCKED_SQUAREOFF", f"Added {sym} x{ev.fill.quantity} during {blocked}: squaring off the add.",
@@ -242,7 +247,7 @@ def on_ledger_event(state: DayState, ev: LedgerEvent, now: datetime, trades_open
             return events   # a square-off completing; nothing to announce
         n = state.counted_trade_no(ev.trade_no)
         events.append(Event("TRADE_CLOSED", f"Trade {n} closed: {sym}"))
-        if n >= th.max_trades and not state.lockout:
+        if capped and n >= th.max_trades and not state.lockout:
             state.lockout = True
             state.lockout_reason = "trade cap"
             events.append(Event("TRADE_CAP_LOCKOUT", f"Trade {th.max_trades} closed: trading is done for the day.", urgent=True))

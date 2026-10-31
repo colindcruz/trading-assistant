@@ -149,6 +149,8 @@ LOOSEN_WHEN = {
 
 def classify_change(name: str, old: float, new: float) -> str:
     """'tighten', 'loosen' or 'same'. Unknown names count as loosen (be safe)."""
+    if name == "max_trades":        # 0 = no cap, i.e. unlimited
+        old, new = (v if v > 0 else float("inf") for v in (old, new))
     if new == old:
         return "same"
     direction = LOOSEN_WHEN.get(name)

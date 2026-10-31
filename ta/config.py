@@ -69,13 +69,14 @@ class RulePercents:
     loss_limit_pct: float = 10.0
     loss_warn1_pct: float = 5.0
     loss_warn2_pct: float = 7.5
-    lock_arm_pct: float = 10.0
-    lock_floor_pct: float = 6.67
-    trail_start_pct: float = 12.5
-    trail_distance_pct: float = 3.4
-    max_trades: int = 4
+    lock_arm_pct: float = 12.5
+    lock_floor_pct: float = 8.33
+    trail_start_pct: float = 15.6
+    trail_distance_pct: float = 4.25
+    max_trades: int = 0                        # 0 = no daily trade cap (decided 2026-10-31)
     cooldown_minutes: int = 3
-    reentry_floor_step: float | None = None   # None -> loss limit / max trades (risk per trade)
+    risk_per_trade_pct: float = 2.5            # Rs 50k at Rs 20L
+    reentry_floor_step: float | None = None    # None -> risk per trade
     floor_alert_step: float = 25_000.0
 
     @classmethod
@@ -91,6 +92,7 @@ class RulePercents:
             trail_distance_pct=_env_float("TRAIL_DISTANCE_PCT", cls.trail_distance_pct),
             max_trades=_env_int("MAX_TRADES", cls.max_trades),
             cooldown_minutes=_env_int("COOLDOWN_MINUTES", cls.cooldown_minutes),
+            risk_per_trade_pct=_env_float("RISK_PER_TRADE_PCT", cls.risk_per_trade_pct),
             reentry_floor_step=float(step) if step else None,
             floor_alert_step=_env_float("FLOOR_ALERT_STEP", cls.floor_alert_step),
         )
@@ -132,7 +134,7 @@ class Thresholds:
             max_trades=p.max_trades,
             cooldown_minutes=p.cooldown_minutes,
             reentry_floor_step=p.reentry_floor_step if p.reentry_floor_step is not None
-            else round(loss_limit / max(1, p.max_trades)),
+            else round(capital * p.risk_per_trade_pct / 100),
             floor_alert_step=p.floor_alert_step,
         )
 
@@ -243,8 +245,8 @@ class Settings:
             problems.append("TELEGRAM_USER_ID is not set (commands are only accepted from this user)")
         if not 0 < self.exit_buffer_pct < 40:
             problems.append("EXIT_BUFFER_PCT must be between 0 and 40 (the LPP band is +/-40%)")
-        if self.percents.max_trades < 1:
-            problems.append("MAX_TRADES must be at least 1")
+        if self.percents.max_trades < 0:
+            problems.append("MAX_TRADES must be 0 (no cap) or more")
         if self.percents.lock_floor_pct >= self.percents.lock_arm_pct:
             problems.append("LOCK_FLOOR_PCT must be below LOCK_ARM_PCT")
         return problems
