@@ -76,6 +76,8 @@ class DayState:
     settings_changes: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     slippage: list[dict] = field(default_factory=list)     # one entry per fill, see slippage.py
+    stops: dict = field(default_factory=dict)               # open trades' stops, see stops.py
+    stop_log: list[dict] = field(default_factory=list)      # closed trades: entry, each ladder's exit, actual exit
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict:

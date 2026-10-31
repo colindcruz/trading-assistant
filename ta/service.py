@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from . import rules, slippage
+from . import rules, slippage, stops
 from .broker import Broker, DryRunBroker, KiteBroker
 from .clock import at_or_after, before, fmt_hhmm, in_market_hours, is_trading_day, now_ist, rupees
 from .config import Settings, Thresholds
@@ -76,6 +76,10 @@ class Service:
         self.order_filled_seen: dict[str, int] = {}
         self.watch_tokens: set[int] = set()         # near-the-money contracts kept subscribed
         self.last_watch_refresh = 0.0
+        self.replaying = False                      # applying the day's fills after a (re)start
+        self.stop_exit_requested: dict[str, float] = {}   # contract key -> clock() of the last stop-exit request
+        self.unprotected_since: dict[str, float] = {}     # open contract key without a stop -> first seen
+        self.unprotected_alerted: set[str] = set()
 
         self.sweep_thread: threading.Thread | None = None
         self.allowed_keys: set[str] = set()         # positions allowed to stay open during a trade-cap lockout
@@ -127,6 +131,7 @@ class Service:
         self._reconcile_trades(now)
         if in_market_hours(now, self.s.market_open, self.s.market_close) or at_or_after(now, self.s.market_close):
             self._run_rules(now)
+            self._run_stops(now)
         self._heartbeat(now)
         self._eod_summary(now)
         self._persist()
@@ -170,6 +175,7 @@ class Service:
         self.allowed_keys = set()
         self.order_filled_seen = {}
         self.order_ref = {}
+        self.stop_exit_requested, self.unprotected_since, self.unprotected_alerted = {}, {}, set()
         record = load_day_record(self.s.state_dir, now.date())
         if record:
             self.state = DayState.from_dict(record)
@@ -193,7 +199,16 @@ class Service:
         self.engine = ExitEngine(self.broker, self.s, self.instruments, self._engine_notify, self._record_order,
                                  clock=self.clock, sleep=self.sleep, now_fn=self.now_fn)
         self.dirty = True
-        self._reconcile_trades(now, force=True)
+        self.replaying = True
+        try:
+            self._reconcile_trades(now, force=True)
+        finally:
+            self.replaying = False
+        for key, t in self.state.stops.items():
+            if t.pop("replayed", False):     # open at (re)start with no saved stop: armed now, from its first fill
+                stop = stops.active_stop(self.state.stops, key)
+                self.notifier.alert(f"Stop armed on restart: {t['symbol']} x{t['qty']} @ {t['first']:g}, stop {stop:g} "
+                                    f"({t['active']}), risk ₹{t['qty'] * (t['avg'] - stop):,.0f}")
 
     def _read_capital(self) -> tuple[float, str]:
         if self.s.capital_override > 0:
@@ -280,6 +295,7 @@ class Service:
             log.info("Ledger: %s %s trade=%s", ev.kind, ev.key, ev.trade_no)
             for event in rules.on_ledger_event(self.state, ev, now, self.ledger.trades_opened, self.s.no_new_time):
                 self._act(event, now)
+            self._stop_on_ledger(ev, fill, now)
             self.dirty = True
 
     def _reconcile_trades(self, now: datetime, force: bool = False) -> None:
@@ -328,6 +344,7 @@ class Service:
                 self.ltp.setdefault(f"{r['exchange']}:{r['tradingsymbol']}", r["last_price"])
         self._adopt_unknown_positions(now)
         self._enforce_lockout(now)
+        self._check_unprotected(now)
 
     def _refresh_watchlist(self, now: datetime) -> None:
         """Re-centre the near-the-money watchlist on spot, every watch_refresh_seconds.
@@ -429,6 +446,125 @@ class Service:
             last = self.engine.square_off(r["key"], reason)
         return last
 
+    # ================================================================ per-trade stops
+    def _stop_on_ledger(self, ev, fill: Fill, now: datetime) -> None:
+        """Keep the stop book in step with the ledger. A trade's stop carries its ledger trade
+        number, so replaying the day's fills after a restart neither re-arms a saved stop
+        (which would lose its ratchet) nor closes it on an older trade's close."""
+        st, c = self.state, self.ledger.contracts.get(ev.key)
+        t = st.stops.get(ev.key)
+        same_trade = t is not None and t.get("trade_no") == ev.trade_no
+        if ev.kind == "TRADE_OPENED":
+            if ev.trade_no in st.void_trades or same_trade or (t is not None and self.replaying):
+                return
+            meta = self.instruments.get((fill.exchange, fill.tradingsymbol))
+            if meta is None or c is None:
+                return
+            events = stops.open_trade(st.stops, ev.key, fill.tradingsymbol, meta["index"], c.qty, fill.price,
+                                      self.s.stop_ladder, f"{fill.ts:%H:%M:%S}")
+            st.stops[ev.key]["trade_no"] = ev.trade_no
+            if self.replaying:
+                st.stops[ev.key]["replayed"] = True   # announced once the replay is done, if still open
+                return
+        elif ev.kind == "POSITION_INCREASED" and same_trade:
+            if self.replaying and not t.get("replayed"):
+                return                                # a saved stop already includes this add
+            events = stops.add_to_trade(st.stops, ev.key, c.qty, c.avg_cost)
+            if self.replaying:
+                return
+        elif ev.kind == "POSITION_REDUCED" and same_trade:
+            stops.reduce_trade(st.stops, ev.key, c.qty)
+            return
+        elif ev.kind == "TRADE_CLOSED" and same_trade:
+            closed = stops.close_trade(st.stops, ev.key)
+            self.stop_exit_requested.pop(ev.key, None)
+            if not closed.get("replayed"):
+                st.stop_log.append(stops.summary_row(ev.key, closed, f"{fill.ts:%H:%M:%S}", fill.price))
+            return
+        else:
+            return
+        for e in events:
+            self._stop_event(e, now)
+
+    def _stops_act(self) -> str | None:
+        """None if a stop hit should sell now, else why not."""
+        st = self.state
+        if self.s.stop_exits != "live":
+            return "stop exits are in LOG mode (STOP_EXITS=log)"
+        if self.store.mode != "live":
+            return "the TA is in DRY-RUN"
+        if st.killed:
+            return "KILLED"
+        if st.pause_auto_exit:
+            return "auto-exit is paused"
+        return None
+
+    def _stop_event(self, e, now: datetime) -> None:
+        st = self.state
+        self.dirty = True
+        log.info("Stop %s %s: %s", e.kind, e.key, e.message)
+        if e.kind == "SHADOW_HIT":
+            st.notes.append(f"{now:%H:%M:%S} {e.message}")
+            return
+        text = e.message
+        if e.kind == "STOP_HIT":
+            why_not = self._stops_act()
+            if why_not is None:
+                text += "\nSelling."
+                self._request_stop_exit(e.key)
+            else:
+                text += f"\nNot sold: {why_not}."
+        self.notifier.alert(text, urgent=e.urgent)
+
+    def _request_stop_exit(self, key: str) -> None:
+        """Sell the whole position (the engine skips quantity already being sold). Repeats every
+        5 s while the stop is hit and the position is open; a sweep already running refuses it."""
+        if self.clock() - self.stop_exit_requested.get(key, -1e9) < 5:
+            return
+        self.stop_exit_requested[key] = self.clock()
+        self._start_sweep(lambda: self.engine.square_off(key, "stop hit"), "stop hit")
+
+    def _run_stops(self, now: datetime) -> None:
+        st = self.state
+        if st is None or not st.stops:
+            return
+        with self.ltp_lock:
+            prices = dict(self.ltp)
+        at = f"{now:%H:%M:%S}"
+        for key in list(st.stops):
+            ex, sym = key.split(":")[:2]
+            price = prices.get(f"{ex}:{sym}")
+            if price:
+                for e in stops.on_price(st.stops, key, price, at):
+                    self._stop_event(e, now)
+            t = st.stops.get(key)
+            if t is not None and t["ladders"][t["active"]]["hit_at"] is not None and self._stops_act() is None:
+                self._request_stop_exit(key)
+
+    def _check_unprotected(self, now: datetime) -> None:
+        """Spec: any position without an armed stop for more than 3 s is an URGENT alarm.
+        Positions being squared off on sight (void trades, lockout, cool-down) are exempt."""
+        st, lg = self.state, self.ledger
+        if st is None or lg is None:
+            return
+        open_keys = {r["key"] for r in self.rows}
+        for k in list(self.unprotected_since):
+            if k not in open_keys or k in st.stops:
+                del self.unprotected_since[k]
+                self.unprotected_alerted.discard(k)
+        if st.lockout or st.in_cooldown(now):
+            return
+        for r in self.rows:
+            k = r["key"]
+            c = lg.contracts.get(k)
+            if k in st.stops or (c is not None and c.trade_no in st.void_trades):
+                continue
+            first = self.unprotected_since.setdefault(k, self.clock())
+            if self.clock() - first > 3 and k not in self.unprotected_alerted:
+                self.unprotected_alerted.add(k)
+                self.notifier.alert(f"UNPROTECTED: {r['tradingsymbol']} x{r['quantity']} has no stop. "
+                                    f"Treat it as unprotected and exit or watch it yourself.", urgent=True)
+
     # ================================================================ sweeps
     def _start_sweep(self, fn, reason: str) -> None:
         if self.sweep_thread is not None and self.sweep_thread.is_alive():
@@ -522,6 +658,9 @@ class Service:
         blocked = st.blocked_reason(now, self.s.no_new_time)
         if blocked:
             lines.append(f"Trading blocked: {blocked}")
+        if st.stops:
+            lines.append(f"Stops ({self.s.stop_ladder}, exits {self.s.stop_exits.upper()}):")
+            lines += ["  " + line for line in stops.status_lines(st.stops)]
         if self.rows:
             lines.append("Open: " + ", ".join(f"{r['tradingsymbol']} x{r['quantity']}" for r in self.rows))
         if self.shorts:
@@ -565,7 +704,8 @@ class Service:
             f"Trades {lg.trades_opened} opened / {lg.trades_closed} closed; peak {rupees(st.peak)}, trough {rupees(st.trough)}\n"
             f"Lockout: {st.lockout_reason or 'none'}; re-entries {st.reentries}; exit orders {len(exits)}; "
             f"turnover {rupees(b['turnover'])}\n"
-            f"{slippage.summary(st.slippage)}")
+            f"{slippage.summary(st.slippage)}\n"
+            f"{stops.compare(st.stop_log)}")
 
     # ================================================================ telegram
     def _telegram_loop(self) -> None:

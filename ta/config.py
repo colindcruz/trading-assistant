@@ -195,6 +195,10 @@ class Settings:
     watch_expiries: int = 2            # nearest expiries per index
     watch_refresh_seconds: float = 60.0
 
+    # --- per-trade stops (stops.py) ---
+    stop_ladder: str = "v1"            # the ladder that alerts and exits; the other is recorded alongside
+    stop_exits: str = "log"            # log = alert and record only; live = sell on a hit (also needs /live)
+
     @classmethod
     def from_env(cls) -> "Settings":
         state_dir = Path(_env("STATE_DIR", "."))
@@ -240,6 +244,8 @@ class Settings:
             watch_strikes=_env_int("WATCH_STRIKES", 10),
             watch_expiries=_env_int("WATCH_EXPIRIES", 2),
             watch_refresh_seconds=_env_float("WATCH_REFRESH_SECONDS", 60.0),
+            stop_ladder=_env("STOP_LADDER", "v1").lower(),
+            stop_exits=_env("STOP_EXITS", "log").lower(),
         )
 
     def validate(self) -> list[str]:
@@ -255,6 +261,10 @@ class Settings:
             problems.append("EXIT_BUFFER_PCT must be between 0 and 40 (the LPP band is +/-40%)")
         if self.percents.max_trades < 0:
             problems.append("MAX_TRADES must be 0 (no cap) or more")
+        if self.stop_ladder not in ("v1", "wide"):
+            problems.append("STOP_LADDER must be v1 or wide")
+        if self.stop_exits not in ("log", "live"):
+            problems.append("STOP_EXITS must be log or live")
         if self.percents.lock_floor_pct >= self.percents.lock_arm_pct:
             problems.append("LOCK_FLOOR_PCT must be below LOCK_ARM_PCT")
         return problems
