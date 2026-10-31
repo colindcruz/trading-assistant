@@ -221,3 +221,26 @@ def test_default_settings_have_no_trade_cap(tmp_path):
     svc.tick()
     assert any("Trades: no cap, risk/trade" in t for t in tg.sent)
     assert "Trades 0 taken" in svc.handle_command("/status", holder["now"])
+
+
+def test_slippage_measured_against_last_tick_and_bid_at_send(tmp_path):
+    b = FakeBroker(bids={"NFO:NIFTY26N0525000CE": 70.0})
+    svc, tg, _, holder, clock = build(tmp_path, b, now=ist(2026, 11, 2, 9, 5))
+    svc.tick()
+    svc.handle_command("/live", holder["now"])
+    holder["now"] = ist(2026, 11, 2, 10, 0)
+    # your BUY: the reference is the last tick when Kite first reports the order
+    svc.on_ticks([{"instrument_token": NIFTY["instrument_token"], "last_price": 99.5}])
+    clock.t += 0.5
+    svc.on_order_update(order_update(NIFTY, 6500, 100.0, oid="mine"))
+    b.add_position(NIFTY, 6500, 100.0, last_price=68.0)
+    svc.on_ticks([{"instrument_token": NIFTY["instrument_token"], "last_price": 68.0}])
+    advance(svc, holder, clock, ticks=2)             # loss limit -> the TA sells at 66.5 against a 70 bid
+    mine = svc.state.slippage[0]
+    assert (mine["order_id"], mine["ref_kind"], mine["points"], mine["ref_age_s"]) == ("mine", "ltp", 0.5, 0.5)
+    ta_order = next(o for o in svc.state.orders if o.get("action") == "place")
+    assert ta_order["bid_at_send"] == 70.0
+    svc.on_order_update(order_update(NIFTY, ta_order["qty"], 66.5, side="SELL", oid=ta_order["order_id"]))
+    advance(svc, holder, clock)
+    exit_rec = next(r for r in svc.state.slippage if r["order_id"] == ta_order["order_id"])
+    assert exit_rec["ref_kind"] == "bid_at_send" and exit_rec["points"] == 3.5

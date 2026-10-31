@@ -166,7 +166,7 @@ class ExitEngine:
             for chunk in split_for_freeze(qty, row["lot_size"], self.s.freeze_qty.get(row["index"], 1000)):
                 part += 1
                 tag = f"{tag_base}{part:02d}"[:20]
-                info = self._place(row, chunk, price, tag, result)
+                info = self._place(row, chunk, price, tag, result, bid)
                 if info is not None:
                     tracked[info["order_id"]] = info
 
@@ -236,11 +236,15 @@ class ExitEngine:
                 self.sleep(wait)
             self._last_order_at = self.clock()
 
-    def _place(self, row: dict, qty: int, price: float, tag: str, result: SweepResult) -> dict | None:
+    def _place(self, row: dict, qty: int, price: float, tag: str, result: SweepResult,
+               bid: float | None = None) -> dict | None:
+        """`bid`: the best bid read for this price; kept on the order so its fill can be
+        measured for slippage."""
         self._pace()
         info = {"order_id": "", "key": row["key"], "symbol": row["tradingsymbol"], "exchange": row["exchange"],
                 "product": row["product"], "qty": qty, "price": price, "tag": tag, "type": "LIMIT",
-                "attempts": 0, "filled": 0, "status": "", "placed_at": self.clock(), "at": self._stamp()}
+                "attempts": 0, "filled": 0, "status": "", "placed_at": self.clock(), "at": self._stamp(),
+                "bid_at_send": bid}
         try:
             info["order_id"] = self.broker.place_limit_sell(row["exchange"], row["tradingsymbol"], row["product"], qty, price, tag)
         except Exception as exc:  # noqa: BLE001
@@ -340,7 +344,7 @@ class ExitEngine:
                 tag = f"{TAG_PREFIX}R{self.now_fn().strftime('%H%M%S')}{len(tracked) % 100:02d}"[:20]
                 log.warning("No live exit order for %s (x%d); re-sending once", r["tradingsymbol"], qty)
                 for chunk in split_for_freeze(qty, r["lot_size"], self.s.freeze_qty.get(r["index"], 1000)):
-                    info = self._place(r, chunk, price, tag, result)
+                    info = self._place(r, chunk, price, tag, result, bid)
                     if info is not None:
                         tracked[info["order_id"]] = info
                 row_by_key[r["key"]] = r

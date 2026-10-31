@@ -75,6 +75,7 @@ class DayState:
     orders: list[dict] = field(default_factory=list)
     settings_changes: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    slippage: list[dict] = field(default_factory=list)     # one entry per fill, see slippage.py
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict:

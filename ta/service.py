@@ -20,7 +20,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from . import rules
+from . import rules, slippage
 from .broker import Broker, DryRunBroker, KiteBroker
 from .clock import at_or_after, before, fmt_hhmm, in_market_hours, is_trading_day, now_ist, rupees
 from .config import Settings, Thresholds
@@ -67,6 +67,8 @@ class Service:
         self.engine: ExitEngine | None = None
 
         self.ltp: dict[str, float] = {}             # "EX:SYM" -> price, from ticks
+        self.ltp_at: dict[str, float] = {}          # "EX:SYM" -> clock() of that tick
+        self.order_ref: dict[str, tuple[float | None, float | None]] = {}  # order id -> (LTP, tick age) when first reported
         self.ltp_lock = threading.Lock()
         self.updates: queue.Queue = queue.Queue()  # order updates from the ticker thread
         self.commands: queue.Queue = queue.Queue()
@@ -163,6 +165,7 @@ class Service:
         self.ledger = Ledger(self.s.charges)
         self.allowed_keys = set()
         self.order_filled_seen = {}
+        self.order_ref = {}
         record = load_day_record(self.s.state_dir, now.date())
         if record:
             self.state = DayState.from_dict(record)
@@ -212,9 +215,17 @@ class Service:
                 price = t.get("last_price")
                 if key and price:
                     self.ltp[key] = float(price)
+                    self.ltp_at[key] = self.clock()
 
     def on_order_update(self, data: dict) -> None:
-        """Ticker thread."""
+        """Ticker thread. Notes the contract's last tick the first time an order is seen:
+        that is the slippage reference for orders the TA did not place."""
+        oid = str(data.get("order_id") or "")
+        if oid and oid not in self.order_ref:
+            key = f"{data.get('exchange')}:{data.get('tradingsymbol')}"
+            with self.ltp_lock:
+                px, at = self.ltp.get(key), self.ltp_at.get(key)
+            self.order_ref[oid] = (px, None if at is None else self.clock() - at)
         self.updates.put(dict(data))
 
     def _drain_order_updates(self, now: datetime) -> None:
@@ -237,7 +248,21 @@ class Service:
         if fill is None:
             return
         self.order_filled_seen[oid] = prev + fill.quantity
+        self._record_slippage(fill)
         self._apply_fill(fill, now)
+
+    def _record_slippage(self, fill: Fill) -> None:
+        if self.state is None:
+            return
+        placed = next((o for o in self.state.orders if o.get("action") == "place" and o.get("order_id") == fill.order_id), None)
+        if placed is not None and placed.get("bid_at_send"):
+            ref, kind, age = float(placed["bid_at_send"]), "bid_at_send", None
+        else:
+            ref, age = self.order_ref.get(fill.order_id, (None, None))
+            kind = "ltp"
+        self.state.slippage.append(slippage.record(fill.order_id, fill.exchange, fill.tradingsymbol, fill.side,
+                                                   fill.quantity, fill.price, ref, kind, age))
+        self.dirty = True
 
     def _apply_fill(self, fill: Fill, now: datetime) -> None:
         if self.ledger is None or self.state is None:
@@ -511,7 +536,8 @@ class Service:
             f"net {rupees(b['net'])}\n"
             f"Trades {lg.trades_opened} opened / {lg.trades_closed} closed; peak {rupees(st.peak)}, trough {rupees(st.trough)}\n"
             f"Lockout: {st.lockout_reason or 'none'}; re-entries {st.reentries}; exit orders {len(exits)}; "
-            f"turnover {rupees(b['turnover'])}")
+            f"turnover {rupees(b['turnover'])}\n"
+            f"{slippage.summary(st.slippage)}")
 
     # ================================================================ telegram
     def _telegram_loop(self) -> None:
