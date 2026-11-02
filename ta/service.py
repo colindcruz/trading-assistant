@@ -275,20 +275,24 @@ class Service:
             return self.s.capital_override, "CAPITAL_OVERRIDE"
         last = self.store.last_good_capital
         try:
-            m = self.broker.margins_equity()
-            opening = float((m.get("available") or {}).get("opening_balance") or 0)
+            avail = self.broker.margins_equity().get("available") or {}
+            # Capital = cash (opening_balance) + pledged-holdings collateral (decided 2026-11-02).
+            # Collateral cannot pay option premium; it counts as capital at risk, not buying power.
+            cash = float(avail.get("opening_balance") or 0)
+            collateral = float(avail.get("collateral") or 0)
         except Exception as exc:  # noqa: BLE001
             log.error("margins() failed: %s", exc)
-            opening = 0.0
-        if opening <= 0 or (last > 0 and abs(opening - last) / last * 100 > self.s.capital_sanity_pct):
+            cash = collateral = 0.0
+        capital = cash + collateral
+        if capital <= 0 or (last > 0 and abs(capital - last) / last * 100 > self.s.capital_sanity_pct):
             if last > 0:
-                self.notifier.alert(f"Capital read failed or implausible ({rupees(opening)}); using last good {rupees(last)}.", urgent=True)
-                return last, f"last good (read {opening})"
-            if opening <= 0:
+                self.notifier.alert(f"Capital read failed or implausible ({rupees(capital)}); using last good {rupees(last)}.", urgent=True)
+                return last, f"last good (read {capital})"
+            if capital <= 0:
                 self.notifier.alert("Capital read failed and no last good value. Set CAPITAL_OVERRIDE or fix Kite.", urgent=True)
                 return 0.0, "none"
-        self.store.last_good_capital = opening
-        return opening, "opening_balance"
+        self.store.last_good_capital = capital
+        return capital, f"cash {rupees(cash).lstrip('+')} + collateral {rupees(collateral).lstrip('+')}"
 
     # ================================================================ data in
     def on_ticks(self, ticks: list[dict]) -> None:

@@ -27,7 +27,8 @@ NIFTY/SENSEX options and places real exit orders. Replaces `pnl-monitor` (and
 - Every order goes through `ta/broker.py`; `DryRunBroker` simulates fills. Never a raw MARKET order
   (Kite rejects it); LIMIT sells below the bid inside the LPP band, prices rounded to tick.
 - One exit sweep at a time; never sell what the TA is already selling (2026-09-09 near-miss).
-- Thresholds are percentages of the day's capital (`opening_balance`), fixed at the open; `/set`
+- Thresholds are percentages of the day's capital (Kite `opening_balance` + pledged `collateral`,
+  decided 2026-11-02), fixed at the open; `/set`
   can change them for the day, loosening needs `force` during market hours.
 - No daily trade cap (`MAX_TRADES=0`, decided 2026-10-31); the -2L loss limit ends the day.
   Positions squared off on sight (lockout, cool-down) are void trades and are not counted.

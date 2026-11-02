@@ -44,6 +44,15 @@ def test_new_day_reads_capital_and_sends_setup(tmp_path):
     assert load_day_record(tmp_path, holder["now"].date())["thresholds"]["loss_limit"] == 200_000
 
 
+def test_capital_is_cash_plus_collateral(tmp_path):
+    svc, tg, b, holder, clock = build(tmp_path)
+    b.margins = {"available": {"opening_balance": 6_32_661.5, "collateral": 9_43_132.52}}
+    svc.tick()
+    assert abs(svc.state.thresholds.capital - 15_75_794.02) < 0.01
+    assert svc.state.capital_source == "cash ₹6.33L + collateral ₹9.43L"
+    assert abs(svc.store.last_good_capital - 15_75_794.02) < 0.01
+
+
 def test_capital_sanity_uses_last_good_value(tmp_path):
     svc, tg, b, holder, clock = build(tmp_path)
     svc.store.last_good_capital = 20_00_000

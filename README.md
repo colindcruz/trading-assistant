@@ -18,7 +18,7 @@ Spec and decisions: https://claude.ai/artifact/6LngquB8RRehHFjzsQX8Hb
 | Time | 15:06 exit all; no new positions after 15:10; summary after 15:30 |
 
 Net P&L = booked + open (marked to live ticks) − charges computed per fill.
-Capital is read from Kite's `opening_balance` before the open and fixed for the day.
+Capital is Kite's `opening_balance` plus pledged-holdings `collateral`, read before the open and fixed for the day.
 
 ## Telegram
 

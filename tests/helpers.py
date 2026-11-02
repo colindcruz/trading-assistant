@@ -79,7 +79,7 @@ class FakeBroker:
         self.cancelled: list[str] = []
         self.trades_rows: list[dict] = []
         self.spot: dict[str, float] = {}   # index LTP keys, e.g. "NSE:NIFTY 50"
-        self.margins = {"available": {"opening_balance": 20_00_000.0, "intraday_payin": 0.0}}
+        self.margins = {"available": {"opening_balance": 20_00_000.0, "collateral": 0.0, "intraday_payin": 0.0}}
         self.raise_on_limit: Exception | None = None
         self.raise_on_market: Exception | None = None
 
