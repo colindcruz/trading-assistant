@@ -276,8 +276,8 @@ class Service:
         last = self.store.last_good_capital
         try:
             avail = self.broker.margins_equity().get("available") or {}
-            # Capital = cash (opening_balance) + pledged-holdings collateral (decided 2026-11-02).
-            # Collateral cannot pay option premium; it counts as capital at risk, not buying power.
+            # Capital = cash (opening_balance) + pledged-holdings collateral (decided 2026-11-02;
+            # Zerodha allows option buying against collateral since 2026, see the spec's funds note).
             cash = float(avail.get("opening_balance") or 0)
             collateral = float(avail.get("collateral") or 0)
         except Exception as exc:  # noqa: BLE001
