@@ -103,11 +103,15 @@ class Notifier:
         self.repeat_seconds = repeat_seconds
         self._last: dict[str, tuple[float, str]] = {}
 
-    def alert(self, text: str, urgent: bool = False, kind: str | None = None) -> None:
+    def alert(self, text: str, urgent: bool = False, kind: str | None = None,
+              repeat_seconds: float | None = None) -> None:
+        """`repeat_seconds` overrides the default repeat guard for this kind (e.g. 15 min
+        for a session problem that will not fix itself any faster)."""
         if kind:
             last = self._last.get(kind)
             now = self.clock()
-            if last and last[1] == text and now - last[0] < self.repeat_seconds:
+            gap = self.repeat_seconds if repeat_seconds is None else repeat_seconds
+            if last and last[1] == text and now - last[0] < gap:
                 return
             self._last[kind] = (now, text)
         if self.is_muted() and not urgent:

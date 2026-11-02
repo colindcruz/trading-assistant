@@ -305,3 +305,33 @@ def test_kill_survives_a_restart_the_same_day(tmp_path):
     svc2, tg2, _, holder2, clock2 = build(tmp_path, b, now=ist(2026, 11, 2, 10, 5))
     svc2.tick()
     assert svc2.state.killed
+
+
+class RejectingSession:
+    """A KiteSession whose token file is yesterday's: every check fails."""
+    def __init__(self):
+        self.token, self.last_token_check = "", 0.0
+        self.kite = type("K", (), {"profile": staticmethod(lambda: None)})()
+        self.checks = 0
+
+    def ensure_session(self, verify=None):
+        self.checks += 1
+        return False, "token rejected by Kite; waiting for a new token file"
+
+
+def test_dead_token_is_quiet_before_the_cron_and_alerts_every_15_minutes_after(tmp_path):
+    session = RejectingSession()
+    tg = FakeTelegram()
+    holder = {"now": ist(2026, 11, 2, 8, 0)}
+    clock = Clock()
+    svc = Service(make_settings(tmp_path), Store(tmp_path), tg, FakeBroker(), session=session,
+                  now_fn=lambda: holder["now"], clock=clock, sleep=clock.sleep)
+    advance(svc, holder, clock, seconds=30, ticks=99)           # 08:00 -> 08:49:30
+    assert session.checks >= 90
+    assert tg.sent == []                                         # expected until the cron runs
+    advance(svc, holder, clock, seconds=30, ticks=1)             # 08:50:00
+    assert len(tg.sent) == 1 and "token rejected" in tg.sent[0] and "URGENT" in tg.sent[0]
+    advance(svc, holder, clock, seconds=30, ticks=28)            # +14 min
+    assert len(tg.sent) == 1
+    advance(svc, holder, clock, seconds=30, ticks=2)             # +15 min
+    assert len(tg.sent) == 2

@@ -24,7 +24,7 @@ def make_settings(state_dir: Path | str = ".", **over) -> Settings:
         order_gap_seconds=0.2, market_protection=-1, skip_below_price=0.0,
         freeze_qty={"NIFTY": 3510, "SENSEX": 1000}, cancel_wait_seconds=3.0,
         pre_open=(9, 15), market_open=(9, 15), exit_all_time=(15, 6), no_new_time=(15, 10),
-        summary_time=(15, 30), market_close=(15, 40), guardian_check_time=(9, 0),
+        summary_time=(15, 30), market_close=(15, 40), guardian_check_time=(9, 0), token_expected_time=(8, 50),
         state_dir=Path(state_dir), log_file=Path(state_dir) / "test.log",
         heartbeat_timeout_seconds=30.0, positions_poll_seconds=2.0, token_check_seconds=30.0, telegram_poll_timeout=1,
     )

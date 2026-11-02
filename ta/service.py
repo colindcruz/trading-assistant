@@ -49,6 +49,9 @@ class SwitchingBroker:
         return getattr(target, name)
 
 
+SESSION_ALERT_REPEAT_SECONDS = 15 * 60   # a dead token is not fixed by nagging every minute
+
+
 class Service:
     def __init__(self, settings: Settings, store: Store, telegram: Telegram, broker: Broker,
                  session=None, now_fn=now_ist, clock=time.time, sleep=time.sleep):
@@ -62,6 +65,7 @@ class Service:
         self.dry = DryRunBroker(broker, on_action=self._dry_action, clock=clock)
         self.broker = SwitchingBroker(broker, self.dry, lambda: self.store.mode)
         self.notifier = Notifier(telegram, is_muted=lambda: bool(self.state and self.state.pause_notifications), clock=clock)
+        self._quiet_session_msg = ""                # last session problem logged while alerts are quiet
 
         self.state: DayState | None = None
         self.ledger: Ledger | None = None
@@ -148,9 +152,16 @@ class Service:
         self.session.last_token_check = self.clock()
         ok, msg = self.session.ensure_session(verify=self.session.kite.profile)
         if not ok:
-            if before(now, self.s.pre_open) or in_market_hours(now, self.s.market_open, self.s.market_close):
-                self.notifier.alert(f"Kite session problem: {msg}", urgent=True, kind="session")
+            if before(now, self.s.token_expected_time):
+                # Yesterday's token is expected to be dead until the 08:45 cron writes a new one.
+                if msg != self._quiet_session_msg:
+                    log.info("Session: %s (no alert before %s)", msg, fmt_hhmm(self.s.token_expected_time))
+                    self._quiet_session_msg = msg
+            elif before(now, self.s.pre_open) or in_market_hours(now, self.s.market_open, self.s.market_close):
+                self.notifier.alert(f"Kite session problem: {msg}", urgent=True, kind="session",
+                                    repeat_seconds=SESSION_ALERT_REPEAT_SECONDS)
             return False
+        self._quiet_session_msg = ""
         if msg != "ok":
             log.info("Session: %s", msg)
             self._load_instruments()

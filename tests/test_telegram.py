@@ -93,3 +93,17 @@ def test_notifier_mute_urgent_and_repeat_guard():
     clock.t += 61
     n.alert("same", kind="k")
     assert len(http.posts) == 5
+
+
+def test_alert_repeat_can_be_set_per_call():
+    http = FakeHttp([])
+    tg = Telegram("bot", "100", "7", "", http=http)
+    clock = Clock()
+    n = Notifier(tg, is_muted=lambda: False, clock=clock, repeat_seconds=60)
+    n.alert("dead token", urgent=True, kind="session", repeat_seconds=900)
+    clock.t += 61
+    n.alert("dead token", urgent=True, kind="session", repeat_seconds=900)
+    assert len(http.posts) == 1                      # the 60 s default does not apply
+    clock.t += 840
+    n.alert("dead token", urgent=True, kind="session", repeat_seconds=900)
+    assert len(http.posts) == 2

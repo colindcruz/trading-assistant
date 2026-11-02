@@ -181,6 +181,7 @@ class Settings:
     summary_time: tuple[int, int]
     market_close: tuple[int, int]
     guardian_check_time: tuple[int, int]
+    token_expected_time: tuple[int, int]   # the token cron has run by now; session alerts are quiet before it
 
     # --- infra ---
     state_dir: Path
@@ -235,6 +236,7 @@ class Settings:
             summary_time=_env_hhmm("SUMMARY_TIME", "15:30"),
             market_close=_env_hhmm("MARKET_CLOSE_TIME", "15:40"),
             guardian_check_time=_env_hhmm("GUARDIAN_CHECK_TIME", "09:00"),
+            token_expected_time=_env_hhmm("TOKEN_EXPECTED_TIME", "08:50"),
             state_dir=state_dir,
             log_file=Path(_env("LOG_FILE", str(state_dir / "trading_assistant.log"))),
             heartbeat_timeout_seconds=_env_float("HEARTBEAT_TIMEOUT_SECONDS", 30.0),
