@@ -41,7 +41,7 @@ NIFTY/SENSEX options and places real exit orders. Replaces `pnl-monitor` (and
 ## Status
 
 The spec's last section, "Open items", is the to-do list; keep it current. As of 2026-10-31:
-deployed in dry-run (`b8e8164`) with the stop/trail engine (log mode), weekly brake, slippage
+deployed in dry-run (`4ce44e1`) with the stop/trail engine (log mode), weekly brake, slippage
 logging and near-the-money watchlist. First session Monday 2026-11-02; `/live lock` planned from
 Tuesday if Monday's checks pass. Code is frozen while Colin is away (2026-11-02 to about
 2026-11-14). Next: rerun the replays on November's day files and candles, decide v1 vs wide,
